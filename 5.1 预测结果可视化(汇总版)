@@ -1,0 +1,827 @@
+****************************************ARIMA*********************************
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import yfinance as yf
+from statsmodels.tsa.arima.model import ARIMA
+from pmdarima import auto_arima
+from sklearn.metrics import mean_squared_error, mean_absolute_error
+import warnings
+
+warnings.filterwarnings('ignore')
+
+
+def get_stock_data(ticker, start_date, end_date):
+    """获取股票历史数据"""
+    print(f"\n正在下载 {ticker} 从 {start_date} 到 {end_date} 的数据...")
+    data = yf.download(ticker, start=start_date, end=end_date)
+    print(f"获取到 {len(data)} 条数据")
+    return data['Close']
+
+
+def find_best_arima_params(data):
+    """自动寻找最佳ARIMA参数"""
+    print("\n开始自动寻找最佳ARIMA参数...")
+    stepwise_fit = auto_arima(data,
+                              start_p=0, max_p=5,
+                              start_q=0, max_q=5,
+                              m=1,
+                              seasonal=False,
+                              d=1, max_d=2,
+                              trace=True,
+                              error_action='ignore',
+                              suppress_warnings=True,
+                              stepwise=True)
+    print(f"找到最佳参数组合: {stepwise_fit.order}")
+    return stepwise_fit.order
+
+
+def train_and_predict_arima(data, prediction_steps, order):
+    """训练ARIMA模型并进行预测"""
+    print(f"\n使用ARIMA{order}进行训练...")
+    model = ARIMA(data, order=order)
+    results = model.fit()
+    print("\n模型训练完成，开始预测...")
+    forecast = results.forecast(steps=prediction_steps)
+    return forecast.values
+
+
+def evaluate_predictions(actual, predicted):
+    """计算评估指标"""
+    actual = np.asarray(actual).ravel()
+    predicted = np.asarray(predicted).ravel()
+
+    min_len = min(len(actual), len(predicted))
+    actual = actual[:min_len]
+    predicted = predicted[:min_len]
+
+    mse = mean_squared_error(actual, predicted)
+    rmse = np.sqrt(mse)
+    mae = mean_absolute_error(actual, predicted)
+    mape = np.mean(np.abs((actual - predicted) / actual)) * 100
+    return mse, rmse, mae, mape
+
+
+def plot_predictions(dates, actual, predicted, title, save_path):
+    """绘制预测结果"""
+    plt.figure(figsize=(12, 6))
+    plt.plot(dates, actual, label='Actual Price', color='green')
+    plt.plot(dates, predicted, label='Predicted Price', color='red', linestyle='--')
+    plt.title(title)
+    plt.xlabel('Date')
+    plt.ylabel('Price')
+    plt.legend()
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    plt.savefig(save_path)
+    plt.show()
+
+
+def save_results(dates, actual, predicted, filepath):
+    """保存预测结果"""
+    results_df = pd.DataFrame({
+        'Date': [d.strftime('%Y-%m-%d') if isinstance(d, pd.Timestamp) else d for d in dates],
+        'Actual_Price': np.asarray(actual).ravel(),
+        'Predicted_Price': np.asarray(predicted).ravel()
+    })
+    results_df.to_csv(filepath, index=False)
+    print(f"\n预测结果已保存至: {filepath}")
+    return results_df
+
+
+if __name__ == "__main__":
+    # 参数设置
+    ticker = "GOOG"
+    prediction_start = "2024-12-02"
+    end_date = "2024-12-31"
+
+    periods = {
+        '30days': 30,
+        '6months': 180,
+        '3years': 1095
+    }
+
+    # 创建一个DataFrame来存储所有时间周期的评估指标
+    metrics_df = pd.DataFrame(columns=['Period', 'MSE', 'RMSE', 'MAE', 'MAPE'])
+
+    for period_name, days in periods.items():
+        print(f"\n{'=' * 50}")
+        print(f"开始训练 {period_name} 历史数据的ARIMA模型:")
+        print(f"{'=' * 50}")
+
+        # 计算起始日期并获取数据
+        start_date = (pd.to_datetime(prediction_start) - pd.Timedelta(days=days)).strftime('%Y-%m-%d')
+        train_data = get_stock_data(ticker, start_date, prediction_start)
+
+        # 获取实际未来数据
+        future_dates = pd.date_range(start=prediction_start, end=end_date, freq='B')
+        actual_data = get_stock_data(ticker, prediction_start, end_date)
+        actual_data = actual_data.reindex(future_dates).ffill()
+
+        # 模型训练和预测
+        best_order = find_best_arima_params(train_data)
+        predictions = train_and_predict_arima(train_data, len(future_dates), best_order)
+
+        # 数据对齐
+        min_len = min(len(predictions), len(actual_data))
+        predictions = predictions[:min_len]
+        actual_values = actual_data.values[:min_len]
+        dates = future_dates[:min_len]
+
+        # 保存预测结果
+        base_path = f'/Users/quyou/Desktop/毕业设计/forecast data/ARIMA/GOOG_arima_{period_name}'
+        results_df = save_results(
+            dates,
+            actual_values,
+            predictions,
+            f'{base_path}.csv'
+        )
+
+        # 绘制结果
+        plot_predictions(
+            dates,
+            actual_values,
+            predictions,
+            f'ARIMA Stock Price Prediction ({period_name} Training)',
+            f'{base_path}_plot.png'
+        )
+
+        # 计算并显示评估指标
+        mse, rmse, mae, mape = evaluate_predictions(actual_values, predictions)
+        print(f"\n模型评估指标 ({period_name}):")
+        print(f"MSE: {mse:.2f}")
+        print(f"RMSE: {rmse:.2f}")
+        print(f"MAE: {mae:.2f}")
+        print(f"MAPE: {mape:.2f}%")
+
+        # 将评估指标添加到DataFrame
+        metrics_df = pd.concat([metrics_df, pd.DataFrame({
+            'Period': [period_name],
+            'MSE': [mse],
+            'RMSE': [rmse],
+            'MAE': [mae],
+            'MAPE': [mape]
+        })])
+
+        # 显示预测结果样例
+        print("\n预测结果示例:")
+        print("\n前5条记录:")
+        print(results_df.head())
+        print("\n后5条记录:")
+        print(results_df.tail())
+
+    # 保存所有时间周期的评估指标
+    metrics_df.to_csv('/Users/quyou/Desktop/毕业设计/forecast data/ARIMA/GOOG_arima_metrics.csv', index=False)
+    print("\n所有评估指标已保存至: GOOG_arima_metrics.csv")
+
+
+
+
+
+
+
+
+
+
+
+
+
+*************************************GARCH*******************************************
+
+
+
+
+
+
+
+
+
+
+
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import yfinance as yf
+from arch import arch_model
+from sklearn.metrics import mean_squared_error, mean_absolute_error
+import warnings
+
+warnings.filterwarnings('ignore')
+
+
+def get_stock_data(ticker, start_date, end_date):
+    """获取股票历史数据"""
+    print(f"\n正在下载 {ticker} 从 {start_date} 到 {end_date} 的数据...")
+    data = yf.download(ticker, start=start_date, end=end_date)
+    print(f"获取到 {len(data)} 条数据")
+    return data['Close']
+
+
+def calculate_returns(prices):
+    """计算对数收益率"""
+    returns = np.log(prices / prices.shift(1)).dropna()
+    # 确保返回一维数组
+    if isinstance(returns, pd.Series):
+        returns = returns.values
+    if isinstance(returns, pd.DataFrame):
+        returns = returns.values
+    return returns.flatten()
+
+
+def evaluate_predictions(actual, predicted):
+    """计算评估指标"""
+    actual = np.asarray(actual).ravel()
+    predicted = np.asarray(predicted).ravel()
+
+    min_len = min(len(actual), len(predicted))
+    actual = actual[:min_len]
+    predicted = predicted[:min_len]
+
+    mse = mean_squared_error(actual, predicted)
+    rmse = np.sqrt(mse)
+    mae = mean_absolute_error(actual, predicted)
+    mape = np.mean(np.abs((actual - predicted) / actual)) * 100
+    return mse, rmse, mae, mape
+
+
+def train_and_predict_garch(train_data, last_price, prediction_steps):
+    """
+    训练GARCH模型并进行预测
+    @param train_data: 训练数据的收益率
+    @param last_price: 最后一个价格
+    @param prediction_steps: 预测步数
+    @return: 预测的价格序列
+    """
+    print("\n开始训练GARCH模型...")
+
+    # 确保训练数据是一维数组
+    if isinstance(train_data, pd.Series):
+        train_data = train_data.values
+    if isinstance(train_data, pd.DataFrame):
+        train_data = train_data.values
+    train_data = train_data.flatten()
+
+    # 设置GARCH模型参数
+    model = arch_model(train_data, vol='Garch', p=1, q=1, mean='Zero', dist='normal')
+
+    # 训练模型
+    print("正在拟合模型...")
+    results = model.fit(disp='off')
+    print("模型训练完成")
+
+    # 预测波动率
+    print("\n开始预测...")
+    forecasts = results.forecast(horizon=prediction_steps)
+    conditional_vol = np.sqrt(forecasts.variance.values[-1, :])
+
+    # 使用蒙特卡洛模拟生成价格路径
+    np.random.seed(42)
+    sim_returns = np.random.normal(train_data.mean(), 1) * conditional_vol
+
+    # 将收益率转换为价格
+    price_path = last_price * np.exp(np.cumsum(sim_returns))
+
+    return price_path.flatten()
+
+
+def plot_predictions(dates, actual, predicted, title, save_path):
+    """绘制预测结果"""
+    plt.figure(figsize=(12, 6))
+    plt.plot(dates, actual, label='Actual Price', color='green')
+    plt.plot(dates, predicted, label='Predicted Price', color='red', linestyle='--')
+    plt.title(title)
+    plt.xlabel('Date')
+    plt.ylabel('Price')
+    plt.legend()
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    plt.savefig(save_path)
+    plt.close()
+
+
+def plot_comparison(all_predictions, save_path):
+    """绘制三个时间周期的对比图"""
+    plt.figure(figsize=(15, 8))
+
+    colors = {'30days': 'red', '6months': 'blue', '3years': 'green'}
+    linestyles = {'30days': '--', '6months': '-.', '3years': ':'}
+
+    # 绘制实际值
+    actual_values = next(iter(all_predictions.values()))['actual']
+    dates = next(iter(all_predictions.values()))['dates']
+    plt.plot(dates, actual_values, label='Actual Price', color='black', linewidth=2)
+
+    # 绘制各个时间周期的预测值
+    for period, data in all_predictions.items():
+        plt.plot(data['dates'], data['predicted'],
+                 label=f'{period} Prediction',
+                 color=colors[period],
+                 linestyle=linestyles[period],
+                 linewidth=1.5)
+
+    plt.title('GARCH Predictions Comparison (Different Training Periods)')
+    plt.xlabel('Date')
+    plt.ylabel('Price')
+    plt.legend()
+    plt.grid(True, linestyle='--', alpha=0.7)
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    plt.savefig(save_path)
+    plt.close()
+
+
+def save_results(dates, actual, predicted, filepath):
+    """保存预测结果"""
+    # 确保所有数据都是一维数组
+    if isinstance(actual, pd.Series):
+        actual = actual.values
+    if isinstance(actual, pd.DataFrame):
+        actual = actual.values
+    actual = np.asarray(actual).ravel()
+
+    if isinstance(predicted, pd.Series):
+        predicted = predicted.values
+    if isinstance(predicted, pd.DataFrame):
+        predicted = predicted.values
+    predicted = np.asarray(predicted).ravel()
+
+    dates = pd.to_datetime(dates)
+
+    # 创建日期列表
+    dates_list = [d.strftime('%Y-%m-%d') for d in dates]
+
+    # 确保所有数据长度一致
+    min_len = min(len(dates_list), len(actual), len(predicted))
+
+    results_df = pd.DataFrame({
+        'Date': dates_list[:min_len],
+        'Actual_Price': actual[:min_len],
+        'Predicted_Price': predicted[:min_len]
+    })
+
+    results_df.to_csv(filepath, index=False)
+    print(f"\n预测结果已保存至: {filepath}")
+    return results_df
+
+
+if __name__ == "__main__":
+    # 参数设置
+    ticker = "GOOG"
+    prediction_start = "2024-12-02"
+    end_date = "2024-12-31"
+
+    periods = {
+        '30days': 30,
+        '6months': 180,
+        '3years': 1095
+    }
+
+    # 创建DataFrame存储评估指标
+    metrics_df = pd.DataFrame(columns=['Period', 'MSE', 'RMSE', 'MAE', 'MAPE'])
+
+    # 存储所有预测结果用于对比图
+    all_predictions = {}
+
+    for period_name, days in periods.items():
+        print(f"\n{'=' * 50}")
+        print(f"开始训练 {period_name} 历史数据的GARCH模型:")
+        print(f"{'=' * 50}")
+
+        try:
+            # 计算起始日期并获取数据
+            start_date = (pd.to_datetime(prediction_start) - pd.Timedelta(days=days)).strftime('%Y-%m-%d')
+            train_prices = get_stock_data(ticker, start_date, prediction_start)
+
+            # 计算收益率
+            train_returns = calculate_returns(train_prices)
+            last_price = float(train_prices.iloc[-1])  # 确保是标量
+
+            # 获取实际未来数据
+            future_dates = pd.date_range(start=prediction_start, end=end_date, freq='B')
+            actual_data = get_stock_data(ticker, prediction_start, end_date)
+            actual_data = actual_data.reindex(future_dates).ffill()
+
+            # 模型训练和预测
+            predictions = train_and_predict_garch(train_returns, last_price, len(future_dates))
+
+            # 数据对齐
+            min_len = min(len(predictions), len(actual_data))
+            predictions = predictions[:min_len]
+            actual_values = actual_data.values[:min_len]
+            dates = future_dates[:min_len]
+
+            # 确保数据是一维的
+            if isinstance(predictions, pd.Series):
+                predictions = predictions.values
+            if isinstance(predictions, pd.DataFrame):
+                predictions = predictions.values
+            predictions = np.array(predictions).flatten()
+
+            if isinstance(actual_values, pd.Series):
+                actual_values = actual_values.values
+            if isinstance(actual_values, pd.DataFrame):
+                actual_values = actual_values.values
+            actual_values = np.array(actual_values).flatten()
+
+            # 保存当前预测结果用于对比图
+            all_predictions[period_name] = {
+                'dates': dates,
+                'actual': actual_values,
+                'predicted': predictions
+            }
+
+            # 保存预测结果
+            base_path = f'/Users/quyou/Desktop/毕业设计/forecast data/GARCH/GOOG_garch_{period_name}'
+            results_df = save_results(
+                dates,
+                actual_values,
+                predictions,
+                f'{base_path}.csv'
+            )
+
+            # 绘制单个预测结果
+            plot_predictions(
+                dates,
+                actual_values,
+                predictions,
+                f'GARCH Stock Price Prediction ({period_name} Training)',
+                f'{base_path}_plot.png'
+            )
+
+
+
+
+
+
+
+
+
+
+            
+****************************************LSTM*********************************
+#仅展示基于过去三年的代码，其他同理
+
+
+
+
+
+
+
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import yfinance as yf
+from sklearn.preprocessing import MinMaxScaler
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense, Dropout
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.callbacks import EarlyStopping
+from datetime import timedelta
+
+# **1️⃣ 参数设置**
+ticker = "GOOG"
+end_date = "2025-01-01"
+train_days = 3 * 365  # 过去 3 年（训练数据）
+future_steps = 21  # 预测未来 21 天（对应2024年12月2日至12月31日）
+sequence_length = 180  # 使用过去 180 天数据预测未来 21 天
+
+# **2️⃣ 数据下载**
+data = yf.download(ticker, start="2019-01-01", end=end_date)
+
+# **3️⃣ 选择收盘价并清洗数据**
+data = data[['Close']].dropna()
+
+# **4️⃣ 增加技术指标（可选）**
+data['MA_30'] = data['Close'].rolling(window=30).mean()  # 30日移动平均
+data['RSI'] = 100 - (100 / (1 + (data['Close'].diff().gt(0).rolling(window=14).sum() / 14)))  # 14日RSI
+data = data.dropna()
+
+# **5️⃣ 数据归一化**
+scaler = MinMaxScaler(feature_range=(0, 1))
+data_scaled = scaler.fit_transform(data)
+
+# **6️⃣ 生成训练数据**
+X, y = [], []
+for i in range(len(data_scaled) - sequence_length - future_steps):
+    X.append(data_scaled[i : i + sequence_length])
+    y.append(data_scaled[i + sequence_length : i + sequence_length + future_steps, 0])  # 取第一列（收盘价）
+
+X, y = np.array(X), np.array(y)
+
+# **7️⃣ 数据检查**
+if X.shape[0] == 0:
+    raise ValueError("数据不足，无法构建训练集！")
+
+# **8️⃣ 构建 LSTM 模型**
+model = Sequential([
+    LSTM(128, return_sequences=False, input_shape=(sequence_length, X.shape[2])),  # 这里返回序列设置为 False
+    Dropout(0.2),
+    Dense(future_steps)  # 预测未来 21 天
+])
+
+model.compile(optimizer=Adam(learning_rate=0.001), loss='mse')
+
+# **9️⃣ 提前停止**
+early_stopping = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
+
+# **🔟 训练 LSTM 模型**
+model.fit(X, y, epochs=100, batch_size=16, validation_split=0.2, callbacks=[early_stopping], verbose=1)
+
+# **1️⃣1️⃣ 进行预测**
+last_sequence = data_scaled[-sequence_length:].reshape(1, sequence_length, X.shape[2])
+future_predictions = model.predict(last_sequence)
+
+# **1️⃣2️⃣ 进行逆归一化**
+# 将预测结果重新调整为二维数组 (21, 1)，与 scaler 兼容
+future_predictions = future_predictions.reshape(-1, 1)
+
+# 只使用收盘价进行逆归一化
+# 构造一个与输入数据相同的二维数组，其中其他列保持为零
+predictions_for_scaling = np.zeros((future_predictions.shape[0], data_scaled.shape[1]))  # 保持与数据相同的列数
+predictions_for_scaling[:, 0] = future_predictions.flatten()  # 只填充第一列（收盘价）
+
+# 使用 scaler 对预测结果进行逆归一化
+future_predictions = scaler.inverse_transform(predictions_for_scaling)[:, 0]
+
+# **1️⃣12️⃣ 获取真实未来价格（修改日期）**
+future_dates = pd.to_datetime([
+    '2024-12-02', '2024-12-03', '2024-12-04', '2024-12-05', '2024-12-06',
+    '2024-12-09', '2024-12-10', '2024-12-11', '2024-12-12', '2024-12-13',
+    '2024-12-16', '2024-12-17', '2024-12-18', '2024-12-19', '2024-12-20',
+    '2024-12-23', '2024-12-24', '2024-12-25', '2024-12-26', '2024-12-27',
+    '2024-12-30', '2024-12-31'
+])[:21]  # 只取前 21 个日期
+
+# 从Yahoo Finance下载实际股价
+test_data = yf.download(ticker, start='2024-12-02', end='2024-12-31')['Close']
+
+# 如果实际数据长度不匹配，进行前向填充
+test_data = test_data.reindex(future_dates)  # 对齐索引
+test_data = test_data.ffill()  # 前向填充缺失数据
+
+# **1️⃣4️⃣ 确保预测数据与实际数据长度一致**
+assert len(future_predictions) == len(test_data), f"预测数据和实际数据的长度不一致！预测长度：{len(future_predictions)}，实际数据长度：{len(test_data)}"
+
+# **1️⃣5️⃣ 创建 DataFrame**
+forecast_df = pd.DataFrame({
+    'Date': future_dates.strftime('%Y-%m-%d'),
+    'Actual Price': test_data.values.flatten(),
+    'Predicted Price': future_predictions
+})
+
+# **1️⃣6️⃣ 保存 CSV**
+forecast_file_path = "/Users/quyou/Desktop/毕业设计/forecast data/LSTM/GOOG_lstm_3years_optimized_dec2024.csv"
+forecast_df.to_csv(forecast_file_path, index=False)
+print(f"✅ 预测结果已保存: {forecast_file_path}")
+
+# **1️⃣7️⃣ 绘制预测 vs 真实价格**
+plt.figure(figsize=(12, 6))
+plt.plot(test_data.index, test_data.values, label='Actual Future Price', color='green')
+plt.plot(test_data.index, future_predictions, label='Predicted Future Price', color='red', linestyle='dashed')
+plt.title("LSTM Forecast vs Actual (GOOG) - Dec 2024 (Optimized)")
+plt.xlabel("Date")
+plt.ylabel("Price")
+plt.legend()
+
+# **1️⃣8️⃣ 保存绘图**
+plot_file_path = "/Users/quyou/Desktop/毕业设计/forecast data/LSTM/GOOG_lstm_optimized_dec2024_comparison.png"
+plt.savefig(plot_file_path)
+plt.show()
+print(f"✅ 对比图已保存: {plot_file_path}")
+
+
+
+
+
+
+
+
+
+
+
+************************************Transformer************************************
+#仅展示基于过去三年的代码，其他同理
+
+
+
+
+
+
+
+
+
+import numpy as np
+import pandas as pd
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader, Dataset
+from sklearn.preprocessing import MinMaxScaler
+import matplotlib.pyplot as plt
+import yfinance as yf
+import math
+from torch.optim.lr_scheduler import CosineAnnealingLR
+
+
+class StockDataset(Dataset):
+    def __init__(self, data, sequence_length=60, prediction_length=30):
+        self.data = data
+        self.sequence_length = sequence_length
+        self.prediction_length = prediction_length
+
+    def __len__(self):
+        return len(self.data) - self.sequence_length - self.prediction_length
+
+    def __getitem__(self, idx):
+        x = self.data[idx:idx + self.sequence_length]
+        y = self.data[idx + self.sequence_length:idx + self.sequence_length + self.prediction_length, 0]
+        return torch.FloatTensor(x), torch.FloatTensor(y)
+
+
+class FastTransformerModel(nn.Module):
+    def __init__(self, input_dim, d_model, nhead, num_layers, output_dim):
+        super().__init__()
+        self.input_projection = nn.Linear(input_dim, d_model)
+
+        encoder_layers = nn.TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=nhead,
+            dim_feedforward=512,
+            dropout=0.1,
+            activation='gelu',
+            batch_first=True
+        )
+        self.transformer_encoder = nn.TransformerEncoder(encoder_layers, num_layers)
+
+        self.decoder = nn.Sequential(
+            nn.Linear(d_model, 256),
+            nn.GELU(),
+            nn.Dropout(0.1),
+            nn.Linear(256, output_dim)
+        )
+
+    def forward(self, src):
+        x = self.input_projection(src)
+        transformer_out = self.transformer_encoder(x)
+        pooled = transformer_out.mean(dim=1)
+        output = self.decoder(pooled)
+        return output
+
+
+def add_technical_indicators(df):
+    """添加基本技术指标"""
+    df['MA20'] = df['Close'].rolling(window=20).mean()
+    df['RSI'] = 100 - (100 / (1 + (df['Close'].diff().gt(0).rolling(window=14).sum() / 14)))
+    df['Price_Change'] = df['Close'].pct_change()
+
+    df = df.ffill()
+    df = df.bfill()
+    return df
+
+
+if __name__ == "__main__":
+    # 参数设置
+    ticker = "GOOG"
+    end_date = "2025-01-01"
+    prediction_start = "2024-12-02"
+    train_days = 3 * 365
+    sequence_length = 60
+    future_steps = 30
+
+    # 下载数据
+    data = yf.download(ticker, start="2019-01-01", end=end_date)
+    data = data[['Close', 'High', 'Low', 'Open', 'Volume']].copy()
+
+    # 添加技术指标
+    data = add_technical_indicators(data)
+    data = data.dropna()
+
+    # 数据归一化
+    scaler = MinMaxScaler()
+    data_scaled = scaler.fit_transform(data)
+
+    # 创建数据集
+    dataset = StockDataset(data_scaled, sequence_length, future_steps)
+    train_size = int(0.8 * len(dataset))
+    train_dataset, val_dataset = torch.utils.data.random_split(dataset, [train_size, len(dataset) - train_size])
+
+    train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=64)
+
+    # 初始化模型
+    model = FastTransformerModel(
+        input_dim=data.shape[1],
+        d_model=128,
+        nhead=4,
+        num_layers=3,
+        output_dim=future_steps
+    )
+
+    criterion = nn.MSELoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+    scheduler = CosineAnnealingLR(optimizer, T_max=10, eta_min=1e-6)
+
+    # 训练循环
+    num_epochs = 100
+    best_val_loss = float('inf')
+    patience = 10
+    no_improve = 0
+
+    for epoch in range(num_epochs):
+        model.train()
+        train_loss = 0
+        for batch_x, batch_y in train_loader:
+            optimizer.zero_grad()
+            output = model(batch_x)
+            loss = criterion(output, batch_y)
+            loss.backward()
+            optimizer.step()
+            train_loss += loss.item()
+
+        scheduler.step()
+
+        model.eval()
+        val_loss = 0
+        with torch.no_grad():
+            for batch_x, batch_y in val_loader:
+                output = model(batch_x)
+                val_loss += criterion(output, batch_y).item()
+
+        avg_train_loss = train_loss / len(train_loader)
+        avg_val_loss = val_loss / len(val_loader)
+
+        print(f'Epoch {epoch + 1}, Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}')
+
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            torch.save(model.state_dict(), 'best_transformer_model.pth')
+            no_improve = 0
+        else:
+            no_improve += 1
+            if no_improve >= patience:
+                print(f"\nEarly stopping triggered! No improvement for {patience} epochs")
+                break
+
+    # 预测
+    model.load_state_dict(torch.load('best_transformer_model.pth'))
+    model.eval()
+
+    # 修复维度问题
+    prediction_data = data.loc[:prediction_start].iloc[-sequence_length:]
+    prediction_scaled = scaler.transform(prediction_data)
+
+    last_sequence = torch.FloatTensor(prediction_scaled).unsqueeze(0)
+    with torch.no_grad():
+        predictions = model(last_sequence).numpy().flatten()
+
+    # 反归一化预测结果
+    predictions_scaled = np.zeros((len(predictions), data.shape[1]))
+    predictions_scaled[:, 0] = predictions
+    predictions = scaler.inverse_transform(predictions_scaled)[:, 0]
+
+    # 生成预测日期
+    future_dates = pd.date_range(start=prediction_start, end="2024-12-31", freq='B')
+
+    # 获取真实价格并确保是一维数组
+    test_data = yf.download(ticker, start=prediction_start, end="2024-12-31")['Close']
+    test_data = test_data.reindex(future_dates).ffill()
+    test_data_values = test_data.values.flatten()  # 确保是一维数组
+
+    # 确保预测结果和实际值长度一致
+    min_len = min(len(predictions), len(test_data_values))
+    predictions = predictions[:min_len]
+    test_data_values = test_data_values[:min_len]
+    future_dates = future_dates[:min_len]
+
+    # 保存预测结果
+    results_df = pd.DataFrame({
+        'Date': [d.strftime('%Y-%m-%d') for d in future_dates],
+        'Actual_Price': test_data_values,
+        'Predicted_Price': predictions
+    })
+    results_df.to_csv('/Users/quyou/Desktop/毕业设计/forecast data/Transformer/GOOG_transformer_3years_fast.csv',
+                      index=False)
+
+    # 绘制结果
+    plt.figure(figsize=(12, 6))
+    plt.plot(future_dates, test_data_values, label='Actual Price', color='green')
+    plt.plot(future_dates, predictions, label='Predicted Price', color='red', linestyle='--')
+    plt.title('Fast Transformer Stock Price Prediction (Dec 2024)')
+    plt.xlabel('Date')
+    plt.ylabel('Price')
+    plt.legend()
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    plt.show()
+
+    # 计算评估指标
+    mse = np.mean((test_data_values - predictions) ** 2)
+    rmse = np.sqrt(mse)
+    mae = np.mean(np.abs(test_data_values - predictions))
+    mape = np.mean(np.abs((test_data_values - predictions) / test_data_values)) * 100
+
+    print("\nModel Performance Metrics:")
+    print(f"MSE: {mse:.2f}")
+    print(f"RMSE: {rmse:.2f}")
+    print(f"MAE: {mae:.2f}")
